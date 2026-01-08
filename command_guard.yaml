@@ -14,5 +14,5 @@ rules:
     reason_require: true
     deny: false
     commands: 
-      - bash /mnt/c/Users/SWAPNIL/Desktop/commandguard/webhook.sh
+      - bash /home/swapnil/send_email.sh
     command_output_debug: true
