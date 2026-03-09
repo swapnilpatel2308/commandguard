@@ -98,7 +98,7 @@ install_user() {
     # Copy cmdguard files
     _run "mkdir -p '$HOME_DIR/cmdguard'"
     _run "mkdir -p '$CFG_DIR'"
-    _run "mkdir -p '$HOOK_DIRR'"
+    _run "mkdir -p '$HOOK_DIR'"
     _run "cp '$SRC_GUARD' '$GUARD_DEST'"
     _run "chmod 644 '$GUARD_DEST'"
     [[ -f "$SRC_CGCTL"  ]] && _run "cp '$SRC_CGCTL' '$HOME_DIR/cmdguard/cgctl' && chmod 755 '$HOME_DIR/cmdguard/cgctl'"
