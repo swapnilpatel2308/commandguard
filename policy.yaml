@@ -1,0 +1,241 @@
+# ================================================================
+#  CommandGuard Policy  v4  —  ~/.cmdguard/policy.yaml
+#
+#  SYSTEM-WIDE fallback: /etc/cmdguard/policy.yaml
+#  User policy always overrides system policy.
+#
+#  FIELDS:
+#    name                  Unique rule name  (required)
+#    description           Human description
+#    filter                Glob matched against command + its basename
+#                          e.g.  "rm -rf*"  "hostname*"  "mkfs*"
+#    deny                  true = instant block, no prompt
+#    enabled               false = skip this rule (keep for reference)
+#    severity              info | warning | critical  (affects colour)
+#    cooldown              Seconds before re-prompting same command.
+#                          0 = always prompt.  60 = re-allow for 60s.
+#    input_prompt          Custom text shown to the user
+#    allow_input           Exact typed string to allow  (e.g. "YES")
+#                          Leave empty for single y/N keypress.
+#    reason_require        true = ask user to type a reason
+#    reason_require_prompt Custom text for the reason question
+#    not_allow_output_text Message shown when blocked or wrong answer
+#    allowed_users         List of usernames  (empty = all users)
+#    commands              Bash commands/scripts to run AFTER execution
+#                          Env vars available:  $CG_CMD  $CG_USER
+#                            $CG_REASON  $CG_OUTPUT  $CG_EXIT_CODE
+#                            $CG_RULE  $CG_HOSTNAME  $CG_TIMESTAMP
+#    command_output_debug  true = capture output → $CG_OUTPUT in hooks
+#
+#  Rules checked TOP TO BOTTOM — first match wins.
+# ================================================================
+
+# Commands that always bypass ALL rules (no prompt, no logging)
+whitelist:
+  - "ls*"
+  - "cat*"
+  - "echo*"
+  - "pwd"
+  - "whoami"
+  - "date*"
+  - "history*"
+  - "man *"
+  - "help*"
+
+rules:
+
+  # ── INSTANT BLOCKS (deny: true) ──────────────────────────────
+
+  - name: block-rm-rf-root
+    description: Block wiping root filesystem — no exceptions.
+    filter: "rm*-rf*/*"
+    deny: true
+    enabled: true
+    severity: critical
+    not_allow_output_text: "⛔ Wiping the filesystem is not allowed."
+
+  - name: block-disk-format
+    description: Block mkfs / disk formatting commands.
+    filter: "mkfs*"
+    deny: true
+    enabled: true
+    severity: critical
+    not_allow_output_text: "⛔ Disk formatting is blocked on this system."
+
+  - name: block-pipe-to-shell
+    description: Block piping remote downloads directly into a shell.
+    filter: "curl* | *bash*"
+    deny: true
+    enabled: true
+    severity: critical
+    not_allow_output_text: "⛔ Piping remote content to a shell is blocked."
+
+  - name: block-fork-bomb
+    description: Block fork bombs.
+    filter: "*:(){ :|:& };:*"
+    deny: true
+    enabled: true
+    severity: critical
+    not_allow_output_text: "⛔ Fork bomb blocked."
+
+  # ── CONFIRM WITH TYPED INPUT ─────────────────────────────────
+
+  - name: hostname-command
+    description: >
+      When user runs hostname, confirm and fire webhook with details.
+    filter: "hostname*"
+    deny: false
+    enabled: true
+    severity: info
+    cooldown: 300
+    input_prompt: "Are you sure you want to execute this command? (type allow/deny)"
+    allow_input: "allow"
+    reason_require: true
+    reason_require_prompt: "Please provide the reason for executing this command:"
+    not_allow_output_text: "⛔ Command blocked by CommandGuard."
+    allowed_users: []
+    commands:
+      - "bash ~/.cmdguard/hooks/send_webhook.sh"
+    command_output_debug: true
+
+  - name: dangerous-delete-protection
+    description: Prevent accidental deletion with rm -rf.
+    filter: "rm -rf*"
+    deny: false
+    enabled: true
+    severity: critical
+    cooldown: 0
+    input_prompt: "⚠️  This is a DANGEROUS command. Type YES to continue:"
+    allow_input: "YES"
+    reason_require: true
+    reason_require_prompt: "Please provide the reason for this deletion:"
+    not_allow_output_text: "⛔ Command blocked by CommandGuard."
+    allowed_users:
+      - admin
+      - devops
+    commands:
+      - "bash ~/.cmdguard/hooks/send_email.sh"
+    command_output_debug: true
+
+  - name: sudo-guard
+    description: Confirm all sudo usage and log to audit system.
+    filter: "sudo*"
+    deny: false
+    enabled: true
+    severity: warning
+    cooldown: 120
+    input_prompt: "🔐 sudo requires confirmation. Type 'allow' to proceed:"
+    allow_input: "allow"
+    reason_require: true
+    reason_require_prompt: "Reason for using sudo:"
+    not_allow_output_text: "⛔ sudo blocked. Access denied."
+    allowed_users: []
+    commands:
+      - "bash ~/.cmdguard/hooks/send_webhook.sh"
+    command_output_debug: false
+
+  # ── CONFIRM y/N (single keypress) ────────────────────────────
+
+  - name: confirm-rm
+    description: Confirm all rm commands (non -rf covered above).
+    filter: "rm *"
+    deny: false
+    enabled: true
+    severity: warning
+    cooldown: 30
+    input_prompt: "Delete file(s)? [y/N]:"
+    allow_input: ""
+    reason_require: false
+    not_allow_output_text: "⛔ Deletion cancelled."
+    allowed_users: []
+    commands: []
+    command_output_debug: false
+
+  - name: confirm-shutdown
+    description: Confirm shutdown command.
+    filter: "shutdown*"
+    deny: false
+    enabled: true
+    severity: critical
+    cooldown: 0
+    input_prompt: "⚡ Type 'confirm' to shutdown:"
+    allow_input: "confirm"
+    reason_require: true
+    reason_require_prompt: "Reason for shutdown:"
+    not_allow_output_text: "⛔ Shutdown cancelled."
+    allowed_users: []
+    commands:
+      - "bash ~/.cmdguard/hooks/send_webhook.sh"
+    command_output_debug: false
+
+  - name: confirm-reboot
+    filter: "reboot*"
+    deny: false
+    enabled: true
+    severity: critical
+    cooldown: 0
+    input_prompt: "⚡ Type 'confirm' to reboot:"
+    allow_input: "confirm"
+    reason_require: true
+    reason_require_prompt: "Reason for reboot:"
+    not_allow_output_text: "⛔ Reboot cancelled."
+    allowed_users: []
+    commands: []
+    command_output_debug: false
+
+  - name: confirm-kill
+    filter: "kill*"
+    deny: false
+    enabled: true
+    severity: warning
+    cooldown: 10
+    input_prompt: "Kill process? [y/N]:"
+    allow_input: ""
+    reason_require: false
+    not_allow_output_text: "⛔ Kill cancelled."
+    allowed_users: []
+    commands: []
+    command_output_debug: false
+
+  - name: confirm-pkg-remove
+    description: Confirm package removal via apt/yum/dnf.
+    filter: "apt* remove*"
+    deny: false
+    enabled: true
+    severity: warning
+    cooldown: 60
+    input_prompt: "Remove package(s)? Type 'remove' to confirm:"
+    allow_input: "remove"
+    reason_require: false
+    not_allow_output_text: "⛔ Package removal cancelled."
+    allowed_users: []
+    commands: []
+    command_output_debug: false
+
+  - name: confirm-git-reset-hard
+    filter: "git*reset*--hard*"
+    deny: false
+    enabled: true
+    severity: warning
+    cooldown: 0
+    input_prompt: "Hard reset will lose all uncommitted changes! Type YES:"
+    allow_input: "YES"
+    reason_require: false
+    not_allow_output_text: "⛔ git reset --hard cancelled."
+    allowed_users: []
+    commands: []
+    command_output_debug: false
+
+  - name: confirm-chmod-recursive
+    filter: "chmod*-R*"
+    deny: false
+    enabled: true
+    severity: warning
+    cooldown: 30
+    input_prompt: "Recursive chmod? [y/N]:"
+    allow_input: ""
+    reason_require: false
+    not_allow_output_text: "⛔ Recursive chmod cancelled."
+    allowed_users: []
+    commands: []
+    command_output_debug: false

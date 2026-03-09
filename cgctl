@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""cgctl — CommandGuard control utility v4"""
+import sys, os, re, argparse, fnmatch
+from pathlib import Path
+
+try:
+    import yaml; HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+POLICY = os.environ.get("CMDGUARD_POLICY",
+    os.path.expanduser("~/.cmdguard/policy.yaml")
+    if os.path.exists(os.path.expanduser("~/.cmdguard/policy.yaml"))
+    else "/etc/cmdguard/policy.yaml"
+)
+LOG = os.environ.get("CMDGUARD_LOG", os.path.expanduser("~/.cmdguard/cmdguard.log"))
+
+R="\033[0;31m"; Y="\033[1;33m"; G="\033[0;32m"
+C="\033[0;36m"; B="\033[1m";    X="\033[0m"
+def col(c,t): return c+t+X
+
+def load():
+    if not HAS_YAML:
+        print(col(R,"PyYAML missing. Run: pip install pyyaml --break-system-packages"))
+        sys.exit(1)
+    with open(POLICY) as f:
+        return yaml.safe_load(f) or {"rules": []}
+
+def save(data):
+    with open(POLICY,"w") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    print(col(G,f"Saved {POLICY}"))
+    print(col(Y,"Run 'cmdguard_reload' in your shell to apply."))
+
+# ─────────────────────────────────────────────────────────────────
+def cmd_status(a):
+    print(col(B,"\nCommandGuard Status"))
+    pok = os.path.exists(POLICY)
+    lok = os.path.exists(LOG)
+    gok = os.path.exists("/etc/cmdguard/policy.yaml")
+    print(f"  User policy  : {POLICY}  " + (col(G,"✓") if pok else col(R,"✗ missing")))
+    print(f"  Global policy: /etc/cmdguard/policy.yaml  " + (col(G,"✓") if gok else col(Y,"✗ not set")))
+    print(f"  Log file     : {LOG}  " + (col(G,"✓") if lok else col(Y,"(not created yet)")))
+    if pok:
+        rules = load().get("rules",[])
+        en = sum(1 for r in rules if r.get("enabled",True))
+        print(f"  Rules        : {len(rules)} total, {en} enabled")
+    if lok:
+        lines = Path(LOG).read_text().splitlines()
+        denied = sum(1 for l in lines if "DENIED" in l or "WRONG_INPUT" in l)
+        confirmed = sum(1 for l in lines if "CONFIRMED" in l)
+        print(f"  Log entries  : {len(lines)} total  ({confirmed} confirmed, {denied} blocked)")
+    print(f"\n  In your shell:")
+    print(f"    cmdguard_status    — is guard active?")
+    print(f"    cmdguard_rules     — show all rules")
+    print(f"    cmdguard_log 50    — show last 50 log entries\n")
+
+def cmd_list(a):
+    data = load()
+    rules = data.get("rules",[])
+    print(col(B,f"\nPolicy: {POLICY}  ({len(rules)} rules)\n"))
+    print(col(B, f"  {'#':<3}  {'EN':<3}  {'DENY':<5}  {'SEV':<9}  {'NAME':<26}  {'ALLOW_IN':<10}  {'CD':<5}  {'TO':<5}  FILTER"))
+    print("  " + "─"*85)
+    icons = {"critical":"🔴","warning":"🟡","info":"🟢"}
+    for i,r in enumerate(rules):
+        deny    = r.get("deny",False)
+        enabled = r.get("enabled",True)
+        sev     = r.get("severity","warning")
+        cd      = r.get("cooldown_seconds",0)
+        to      = r.get("timeout_seconds",0)
+        en_s    = col(G,"✓") if enabled else col(Y,"✗")
+        c_col   = (R+B) if deny else (Y if sev=="warning" else (R if sev=="critical" else G))
+        icon    = icons.get(sev,"⚡")
+        print(f"  {i:<3}  {en_s}   "
+              f"{col(c_col, ('deny' if deny else 'confirm')+'  ')}"
+              f"{icon}{sev:<8}  "
+              f"{r.get('name',''):<26}  "
+              f"{str(r.get('allow_input','')):<10}  "
+              f"{str(cd)+'s':<5}  "
+              f"{str(to)+'s':<5}  "
+              f"{r.get('filter','')}")
+    print()
+
+def cmd_test(a):
+    cmd  = " ".join(a.command)
+    data = load()
+    parts = cmd.split()
+    base  = os.path.basename(parts[0]) if parts else ""
+    norm  = " ".join([base]+parts[1:]) if len(parts)>1 else base
+    matched = None
+    for rule in data.get("rules",[]):
+        if not rule.get("enabled",True): continue
+        pat = rule.get("filter","")
+        if fnmatch.fnmatch(cmd,pat) or fnmatch.fnmatch(norm,pat):
+            matched=rule; break
+    icons = {"critical":"🔴","warning":"🟡","info":"🟢"}
+    print(f"\n  Command    : {col(C,cmd)}")
+    print(f"  Normalized : {col(C,norm)}")
+    if matched:
+        deny = matched.get("deny",False)
+        sev  = matched.get("severity","warning")
+        icon = icons.get(sev,"⚡")
+        c    = R+B if deny else Y+B
+        print(f"  Decision   : {col(c,'INSTANT BLOCK' if deny else 'CONFIRM (prompt)')}")
+        print(f"  Rule       : {matched.get('name','?')}")
+        print(f"  Severity   : {icon} {sev}")
+        print(f"  Filter     : {matched.get('filter','')}")
+        if not deny:
+            print(f"  Prompt     : {matched.get('input_prompt','')}")
+            print(f"  Allow input: {col(B,str(matched.get('allow_input','')))}")
+            print(f"  Max tries  : {matched.get('max_attempts',3)}")
+            print(f"  Reason req : {matched.get('reason_require',False)}")
+            print(f"  Cooldown   : {matched.get('cooldown_seconds',0)}s")
+            print(f"  Timeout    : {matched.get('timeout_seconds',0)}s")
+        au = matched.get("allowed_users") or []
+        print(f"  Users      : {', '.join(au) if au else col(G,'all users')}")
+        cmds = matched.get("commands") or []
+        if cmds:
+            print(f"  Hooks      :")
+            for c in cmds: print(f"               {c}")
+        tags = matched.get("tags") or []
+        if tags: print(f"  Tags       : {', '.join(str(t) for t in tags)}")
+        if matched.get("description"):
+            print(f"  Description: {matched['description']}")
+    else:
+        print(f"  Decision   : {col(G+B,'ALLOW (no rule matched)')}")
+    print()
+
+def cmd_add(a):
+    data = load()
+    rule = {
+        "name": a.name, "description": a.description or "",
+        "filter": a.filter, "deny": a.deny, "enabled": True,
+        "severity": a.severity,
+        "input_prompt": a.prompt or "Type to confirm:",
+        "allow_input": a.allow_input, "max_attempts": a.max_attempts,
+        "reason_require": a.reason,
+        "reason_require_prompt": "Please provide reason:",
+        "not_allow_output_text": "⛔ Command blocked by CommandGuard.",
+        "cooldown_seconds": a.cooldown, "timeout_seconds": a.timeout,
+        "allowed_users": [], "commands": [], "command_output_debug": False,
+        "tags": [],
+    }
+    if a.position is not None:
+        data.setdefault("rules",[]).insert(a.position, rule)
+    else:
+        data.setdefault("rules",[]).append(rule)
+    save(data)
+    print(col(G,f"Added: {a.name}"))
+
+def cmd_remove(a):
+    data = load(); rules = data.get("rules",[])
+    before = len(rules)
+    if a.index is not None:
+        rem = rules.pop(a.index)
+        print(col(Y,f"Removed #{a.index}: {rem.get('name','')}"))
+    else:
+        data["rules"] = [r for r in rules if r.get("name") != a.name]
+        print(col(Y,f"Removed {before-len(data['rules'])} rule(s)"))
+    save(data)
+
+def cmd_enable(a):
+    data = load()
+    for r in data.get("rules",[]):
+        if r.get("name")==a.name:
+            r["enabled"]=True; save(data)
+            print(col(G,f"Enabled: {a.name}")); return
+    print(col(R,f"Not found: {a.name}"))
+
+def cmd_disable(a):
+    data = load()
+    for r in data.get("rules",[]):
+        if r.get("name")==a.name:
+            r["enabled"]=False; save(data)
+            print(col(Y,f"Disabled: {a.name}")); return
+    print(col(R,f"Not found: {a.name}"))
+
+def cmd_log(a):
+    if not os.path.exists(LOG):
+        print(f"No log at {LOG}"); return
+    lines = Path(LOG).read_text().splitlines()
+    if a.action:   lines = [l for l in lines if f"ACTION={a.action}" in l]
+    if a.user:     lines = [l for l in lines if f"USER={a.user}" in l]
+    if a.rule:     lines = [l for l in lines if f"RULE={a.rule}" in l]
+    if a.tag:      lines = [l for l in lines if f"TAGS=.*{a.tag}" in l or a.tag in l]
+    lines = lines[-(a.n or 30):]
+    print(col(B,f"\nLast {len(lines)} log entries:\n"))
+    for ln in lines:
+        if any(x in ln for x in ("DENIED","USER_DENIED","WRONG_INPUT","NO_REASON")):
+            print(col(R,"  "+ln))
+        elif "CONFIRMED" in ln:
+            print(col(G,"  "+ln))
+        elif any(x in ln for x in ("ABORTED","COOLDOWN")):
+            print(col(Y,"  "+ln))
+        else:
+            print("  "+ln)
+    print()
+
+def cmd_log_stats(a):
+    if not os.path.exists(LOG):
+        print(f"No log at {LOG}"); return
+    lines = Path(LOG).read_text().splitlines()
+    from collections import Counter
+    actions, rules, users = Counter(), Counter(), Counter()
+    for ln in lines:
+        for part in ln.split("|"):
+            part = part.strip()
+            if part.startswith("ACTION="): actions[part.split("=",1)[1].strip()] += 1
+            elif part.startswith("RULE="):  rules[part.split("=",1)[1].strip()] += 1
+            elif part.startswith("USER="):  users[part.split("=",1)[1].strip()] += 1
+    print(col(B,"\nCommandGuard Log Statistics\n"))
+    print(col(B,"  Actions:"))
+    for k,v in actions.most_common():
+        c = G if "CONFIRMED" in k else (R if any(x in k for x in ("DENIED","WRONG","NO_REASON")) else Y)
+        print(f"    {col(c,f'{k:<20}')} {v}")
+    print(col(B,"\n  Top Rules:"))
+    for k,v in rules.most_common(10):
+        print(f"    {k:<30} {v}")
+    print(col(B,"\n  Top Users:"))
+    for k,v in users.most_common(10):
+        print(f"    {k:<20} {v}")
+    print()
+
+def cmd_edit(a):
+    os.execlp(os.environ.get("EDITOR","nano"),"editor",POLICY)
+
+def cmd_init(a):
+    dst = Path(POLICY); dst.parent.mkdir(parents=True,exist_ok=True)
+    if dst.exists() and not getattr(a,"force",False):
+        print(f"Already exists: {POLICY}  (--force to overwrite)"); return
+    src = Path(__file__).parent/"policy.yaml"
+    if not src.exists(): print(col(R,"policy.yaml not found")); return
+    import shutil; shutil.copy(src,dst)
+    hooks_dir = dst.parent/"hooks"; hooks_dir.mkdir(exist_ok=True)
+    hooks_src = Path(__file__).parent/"hooks"
+    if hooks_src.exists():
+        for f in hooks_src.iterdir():
+            shutil.copy(f, hooks_dir/f.name)
+            (hooks_dir/f.name).chmod(0o755)
+    print(col(G,f"Initialized: {dst.parent}"))
+
+def cmd_watch(a):
+    """Live tail the audit log."""
+    import time, subprocess
+    if not os.path.exists(LOG):
+        print(f"No log at {LOG} yet."); return
+    print(col(B, f"Watching {LOG}  (Ctrl+C to stop)\n"))
+    try:
+        proc = subprocess.Popen(
+            ["tail", "-f", "-n", str(a.n or 20), LOG],
+            stdout=subprocess.PIPE, text=True
+        )
+        for line in proc.stdout:
+            line = line.rstrip()
+            if "DENIED" in line or "USER_DENIED" in line:
+                print(col(R, line))
+            elif "ABORTED" in line or "NO_REASON" in line:
+                print(col(Y, line))
+            elif "CONFIRMED" in line:
+                print(col(G, line))
+            else:
+                print(line)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try: proc.kill()
+        except: pass
+
+def cmd_stats(a):
+    if not os.path.exists(LOG):
+        print(f"No log at {LOG}"); return
+    from collections import Counter
+    lines = Path(LOG).read_text().splitlines()
+    actions, rules, users = Counter(), Counter(), Counter()
+    for ln in lines:
+        for part in ln.split(" | "):
+            k, _, v = part.partition("=")
+            k = k.strip(); v = v.strip()
+            if k == "ACTION":   actions[v] += 1
+            elif k == "RULE":   rules[v]   += 1
+            elif k == "USER":   users[v]   += 1
+    total = len(lines)
+    print(col(B, f"\nCommandGuard Log Stats  ({total} entries)\n"))
+    print(col(B, "Actions:"))
+    for act, n in sorted(actions.items(), key=lambda x: -x[1]):
+        c = R if "DENIED" in act or "USER_DENIED" in act else (Y if "ABORTED" in act else G)
+        print(f"  {col(c, f'{n:>6}')}  {act}")
+    print(col(B, "\nTop Rules:"))
+    for rule, n in rules.most_common(10):
+        print(f"  {n:>6}  {rule}")
+    print(col(B, "\nTop Users:"))
+    for user, n in users.most_common(10):
+        print(f"  {n:>6}  {user}")
+    print()
+
+def cmd_export(a):
+    import shutil, datetime
+    ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = a.output or f"cmdguard_backup_{ts}.yaml"
+    shutil.copy(POLICY, dst)
+    print(col(G, f"Policy exported to: {dst}"))
+
+def cmd_import(a):
+    if not HAS_YAML:
+        print(col(R, "PyYAML required")); return
+    with open(a.file) as f:
+        data = yaml.safe_load(f)
+    n = len(data.get("rules", []))
+    if not a.force:
+        answer = input(f"Import {n} rules from {a.file}? This will overwrite {POLICY}. [y/N]: ")
+        if answer.lower() != "y":
+            print("Cancelled."); return
+    save(data)
+    print(col(G, f"Imported {n} rules from {a.file}"))
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="cgctl",
+        description="CommandGuard control utility",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  cgctl list
+  cgctl test "rm -rf /home/user"
+  cgctl test hostname -f
+  cgctl add --name myguard --filter "kubectl delete*" --prompt "Type DELETE:" --allow-input DELETE
+  cgctl disable dangerous-delete-protection
+  cgctl log -n 50 --action DENIED
+  cgctl watch
+  cgctl stats
+  cgctl export --output my_backup.yaml
+  cgctl import --file my_backup.yaml
+        """
+    )
+    sub = p.add_subparsers(dest="cmd")
+    sub.add_parser("status")
+    sub.add_parser("list")
+    sub.add_parser("edit")
+    pi = sub.add_parser("init"); pi.add_argument("--force", action="store_true")
+
+    pt = sub.add_parser("test"); pt.add_argument("command", nargs="+")
+
+    pa = sub.add_parser("add")
+    pa.add_argument("--name", required=True)
+    pa.add_argument("--filter", required=True)
+    pa.add_argument("--deny", action="store_true", default=False)
+    pa.add_argument("--prompt", default="Type to confirm:")
+    pa.add_argument("--allow-input", default="allow", dest="allow_input")
+    pa.add_argument("--reason", action="store_true", default=False)
+    pa.add_argument("--description", default="")
+    pa.add_argument("--severity", choices=["info","warning","critical"], default="warning")
+    pa.add_argument("--cooldown", type=int, default=0)
+
+    pr = sub.add_parser("remove")
+    g = pr.add_mutually_exclusive_group(required=True)
+    g.add_argument("--index", type=int); g.add_argument("--name")
+
+    sub.add_parser("enable",  help="Enable rule by name").add_argument("name")
+    sub.add_parser("disable", help="Disable rule by name").add_argument("name")
+
+    pl = sub.add_parser("log")
+    pl.add_argument("-n", type=int, default=20)
+    pl.add_argument("--action", help="Filter by action e.g. DENIED")
+
+    pw = sub.add_parser("watch", help="Live tail audit log")
+    pw.add_argument("-n", type=int, default=20)
+
+    sub.add_parser("stats", help="Audit log statistics")
+
+    pe = sub.add_parser("export", help="Export policy to file")
+    pe.add_argument("--output", default=None)
+
+    pi2 = sub.add_parser("import", help="Import policy from file")
+    pi2.add_argument("--file", required=True)
+    pi2.add_argument("--force", action="store_true")
+
+    args = p.parse_args()
+    if not args.cmd: p.print_help(); return
+
+    {
+        "status":cmd_status, "list":cmd_list,   "test":cmd_test,
+        "add":cmd_add,       "remove":cmd_remove,"log":cmd_log,
+        "edit":cmd_edit,     "init":cmd_init,
+        "enable":cmd_enable, "disable":cmd_disable,
+        "watch":cmd_watch,   "stats":cmd_stats,
+        "export":cmd_export, "import":cmd_import,
+    }[args.cmd](args)
+
+if __name__ == "__main__":
+    main()
+
+# Patch main() to add new subcommands
+_orig_main = main
