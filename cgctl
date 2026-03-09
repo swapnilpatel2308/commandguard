@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cgctl — CommandGuard control utility v4"""
+"""cgctl — CommandGuard control utility"""
 import sys, os, re, argparse, fnmatch
 from pathlib import Path
 

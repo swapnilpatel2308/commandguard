@@ -1,5 +1,5 @@
 # ================================================================
-#  CommandGuard Policy  v4  —  ~/.cmdguard/policy.yaml
+#  CommandGuard Policy  —  ~/.cmdguard/policy.yaml
 #
 #  SYSTEM-WIDE fallback: /etc/cmdguard/policy.yaml
 #  User policy always overrides system policy.

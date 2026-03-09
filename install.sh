@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ================================================================
-#  CommandGuard install.sh  v5  —  bash only
+#  CommandGuard install.sh  —  bash only
 #
-#  Patches bash startup files so the guard activates in every
 #  bash scenario: new terminal, tmux, ssh, su -
 #
 #  Usage:

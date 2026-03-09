@@ -1,5 +1,5 @@
 # ================================================================
-#  CommandGuard  —  cmdguard.bashrc  v5
+#  CommandGuard  —  cmdguard.bashrc
 #  Bash only.
 #
 #  Add to ~/.bashrc:     source ~/cmdguard/cmdguard.bashrc
