@@ -42,6 +42,7 @@ CommandGuard sits inside your bash shell using the `DEBUG` trap + `extdebug`. Be
 
 No root required. No kernel modules. No wrappers. Pure bash.
 
+<video src="demo-video.mp4" controls="controls" muted width="500"></video>
 ---
 
 ## Use Cases
