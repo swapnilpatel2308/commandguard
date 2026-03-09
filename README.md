@@ -120,7 +120,7 @@ Policy changes take effect **automatically** — no shell restart needed. Comman
 ### Install for current user
 
 ```bash
-git clone https://github.com/yourname/commandguard ~/cmdguard
+git clone https://github.com/swapnilpatel2308/commandguard.git ~/cmdguard
 cd ~/cmdguard
 bash install.sh
 source ~/.bashrc
